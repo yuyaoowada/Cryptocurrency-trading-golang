@@ -1,15 +1,30 @@
 package main
 
 import (
-	"buy-btc/bitflyer"
 	"fmt"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+
+	// "github.com/aws/aws-sdk-go"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/ssm"
 )
 
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	ticker, err := bitflyer.GetTicker(bitflyer.Btcjpy)
+	// ticker, err := bitflyer.GetTicker(bitflyer.Btcjpy)
+
+	apiKey, err := getParameter("buy-btc-apikey")
+	if err != nil {
+		return getErrorResponse(err.Error()), err
+	}
+
+	// apiSecret, err := getParameter("buy-btc-apisecret")
+	// if err != nil {
+	// 	return getErrorResponse(err.Error()), err
+	// }
+
 	if err != nil {
 		return events.APIGatewayProxyResponse{
 			Body:       "Bad Request!!",
@@ -18,9 +33,36 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 	}
 
 	return events.APIGatewayProxyResponse{
-		Body:       fmt.Sprintf("Ticker:%+v", ticker),
+		Body:       fmt.Sprintf("ApiKey:%+v", apiKey),
 		StatusCode: 200,
 	}, nil
+}
+
+// System Managerからパラメータを取得する関数
+func getParameter(key string) (string, error) {
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	svc := ssm.New(sess, aws.NewConfig().WithRegion("ap-northeast-1"))
+
+	params := &ssm.GetParameterInput{
+		Name:           aws.String(key),
+		WithDecryption: aws.Bool(true),
+	}
+
+	res, err := svc.GetParameter(params)
+	if err != nil {
+		return "", err
+	}
+	return *res.Parameter.Value, nil
+}
+
+func getErrorResponse(message string) events.APIGatewayProxyResponse {
+	return events.APIGatewayProxyResponse{
+		Body:       message,
+		StatusCode: 400,
+	}
 }
 
 func main() {
