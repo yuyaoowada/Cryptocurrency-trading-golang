@@ -2,7 +2,14 @@ package bitflyer
 
 import (
 	"buy-btc/utils"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+
+	"crypto/hmac"
+	"crypto/sha256"
+	"strconv"
+	"time"
 )
 
 const baseURL = "https://api.bitflyer.com"
@@ -23,6 +30,53 @@ func GetTicker(code ProductCode) (*Ticker, error) {
 	return &ticker, nil
 }
 
+// 注文処理
+func PlaceOrder(order *Order, apiKey, apiSecret string) (*OrderRes, error) {
+	method := "POST"
+	path := "/v1/me/sendchildorder"
+	url := baseURL + path
+	data, err := json.Marshal(order)
+	if err != nil {
+		return nil, err
+	}
+
+	header := getHeader(method, path, apiKey, apiSecret, data)
+
+	res, err := utils.DoHttpRequest(method, url, header, map[string]string{}, data)
+	if err != nil {
+		return nil, err
+	}
+
+	var orderRes OrderRes
+	err = json.Unmarshal(res, &orderRes)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(orderRes.ChildOrderAcceptanceId) == 0 {
+		return nil, errors.New(string(res))
+	}
+
+	return &orderRes, nil
+}
+
+// ヘッダー取得
+func getHeader(method, path, apiKey, apiSecret string, body []byte) map[string]string {
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+
+	text := timestamp + method + path + string(body)
+	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac.Write([]byte(text))
+	sign := hex.EncodeToString(mac.Sum(nil))
+
+	return map[string]string{
+		"ACCESS-KEY":       apiKey,
+		"ACCESS-TIMESTAMP": timestamp,
+		"ACCESS-SIGN":      sign,
+		"Content-Type":     "application/json",
+	}
+}
+
 type Ticker struct {
 	Product         string  `json:"product_code"`
 	State           string  `json:"state"`
@@ -37,4 +91,17 @@ type Ticker struct {
 	Ltp             float64 `json:"ltp"`
 	Volume          float64 `json:"volume"`
 	VolumeByProduct float64 `json:"volume_by_product"`
+}
+
+type Order struct {
+	ProductCode     string  `json:"product_code"`
+	ChildOrderType  string  `json:"child_order_type"`
+	Side            string  `json:"side"`
+	Price           float64 `json:"price"`
+	Size            float64 `json:"size"`
+	MinuteToExpires int     `json:"minute_to_expire"`
+	TimeInForce     string  `json:"time_in_force"`
+}
+type OrderRes struct {
+	ChildOrderAcceptanceId string `json:"child_order_acceptance_id"`
 }
