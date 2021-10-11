@@ -3,12 +3,9 @@ package main
 import (
 	"buy-btc/bitflyer"
 	"fmt"
-	"math"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-
-	// "github.com/aws/aws-sdk-go"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ssm"
@@ -19,6 +16,18 @@ import (
 // 数量→0.001BTC
 
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+	tickerChan := make(chan *bitflyer.Ticker)
+	errChan := make(chan error)
+	defer close(tickerChan)
+	defer close(errChan)
+
+	go bitflyer.GetTicker(tickerChan, errChan, bitflyer.Btcjpy)
+	ticker := <-tickerChan
+	err := <-errChan
+	if err != nil {
+		return getErrorResponse(err.Error()), nil
+	}
+
 	apiKey, err := getParameter("buy-btc-apikey")
 	if err != nil {
 		return getErrorResponse(err.Error()), err
@@ -29,21 +38,12 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		return getErrorResponse(err.Error()), err
 	}
 
-	ticker, err := bitflyer.GetTicker(bitflyer.Btcjpy)
+	client := bitflyer.NewAPIClient(apiKey, apiSecret)
 
-	buyPrice := RoundDecimal(ticker.Ltp * 0.95)
+	// カリー化
+	price, size := bitflyer.GetBuyLogic(1)(10000.0, ticker)
+	orderRes, err := bitflyer.PlaceOrderWithParams(client, price, size)
 
-	order := bitflyer.Order{
-		ProductCode:     bitflyer.Btcjpy.String(),
-		ChildOrderType:  bitflyer.Limit.String(),
-		Side:            bitflyer.Buy.String(),
-		Price:           buyPrice,
-		Size:            0.001,
-		MinuteToExpires: 4320, // 3days
-		TimeInForce:     bitflyer.Gtc.String(),
-	}
-
-	orderRes, err := bitflyer.PlaceOrder(&order, apiKey, apiSecret)
 	if err != nil {
 		return getErrorResponse(err.Error()), err
 	}
@@ -52,10 +52,6 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		Body:       fmt.Sprintf("res:%+v", orderRes),
 		StatusCode: 200,
 	}, nil
-}
-
-func RoundDecimal(num float64) float64 {
-	return math.Round(num)
 }
 
 // System Managerからパラメータを取得する関数

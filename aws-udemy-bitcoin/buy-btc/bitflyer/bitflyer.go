@@ -14,24 +14,59 @@ import (
 
 const baseURL = "https://api.bitflyer.com"
 const productCodeKey = "product_code"
+const btcMinimumAmount = 0.001 // bitflyerにおけるBTCの最小注文数量
+const btcPlace = 4.0           // 小数第4位以下を切り捨て
 
-func GetTicker(code ProductCode) (*Ticker, error) {
+type APIClient struct {
+	apiKey    string
+	apiSecret string
+}
+
+func NewAPIClient(apiKey, apiSecret string) *APIClient {
+	return &APIClient{apiKey, apiSecret}
+}
+
+func GetTicker(ch chan *Ticker, errCh chan error, code ProductCode) {
 	url := baseURL + "/v1/ticker"
 	res, err := utils.DoHttpRequest("GET", url, nil, map[string]string{productCodeKey: code.String()}, nil)
 	if err != nil {
-		return nil, err
+		ch <- nil
+		errCh <- err
+		return
 	}
 
 	var ticker Ticker
 	err = json.Unmarshal(res, &ticker)
 	if err != nil {
-		return nil, err
+		ch <- nil
+		errCh <- err
+		return
 	}
-	return &ticker, nil
+	ch <- &ticker
+	errCh <- nil
 }
 
-// 注文処理
-func PlaceOrder(order *Order, apiKey, apiSecret string) (*OrderRes, error) {
+func PlaceOrderWithParams(client *APIClient, price, size float64) (*OrderRes, error) {
+	order := Order{
+		ProductCode:     Btcjpy.String(),
+		ChildOrderType:  Limit.String(),
+		Side:            Buy.String(),
+		Price:           price,
+		Size:            size,
+		MinuteToExpires: 4320, // 3days
+		TimeInForce:     Gtc.String(),
+	}
+
+	orderRes, err := client.PlaceOrder(&order)
+	if err != nil {
+		return nil, err
+	}
+
+	return orderRes, nil
+}
+
+// 新規注文処理
+func (client *APIClient) PlaceOrder(order *Order) (*OrderRes, error) {
 	method := "POST"
 	path := "/v1/me/sendchildorder"
 	url := baseURL + path
@@ -40,7 +75,7 @@ func PlaceOrder(order *Order, apiKey, apiSecret string) (*OrderRes, error) {
 		return nil, err
 	}
 
-	header := getHeader(method, path, apiKey, apiSecret, data)
+	header := client.getHeader(method, path, data)
 
 	res, err := utils.DoHttpRequest(method, url, header, map[string]string{}, data)
 	if err != nil {
@@ -60,17 +95,45 @@ func PlaceOrder(order *Order, apiKey, apiSecret string) (*OrderRes, error) {
 	return &orderRes, nil
 }
 
+// ロジックを取得する関数
+func GetBuyLogic(strategy int) func(float64, *Ticker) (float64, float64) {
+	var logic func(float64, *Ticker) (float64, float64)
+
+	switch strategy {
+	case 1:
+		// LTPの98.5%の価格で注文を行うロジック
+		logic = func(budget float64, t *Ticker) (float64, float64) {
+			var buyPrice, buySize float64
+			buyPrice = utils.RoundDecimal(t.Ltp * 0.985)
+			buySize = utils.CalcAmount(buyPrice, budget, btcMinimumAmount, btcPlace)
+
+			return buyPrice, buySize
+		}
+	default:
+		// BestASKを注文価格とする
+		logic = func(budget float64, t *Ticker) (float64, float64) {
+			var buyPrice, buySize float64
+			buyPrice = utils.RoundDecimal(t.BestAsk)
+			buySize = utils.CalcAmount(buyPrice, budget, btcMinimumAmount, btcPlace)
+
+			return buyPrice, buySize
+		}
+	}
+
+	return logic
+}
+
 // ヘッダー取得
-func getHeader(method, path, apiKey, apiSecret string, body []byte) map[string]string {
+func (client *APIClient) getHeader(method, path string, body []byte) map[string]string {
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 
 	text := timestamp + method + path + string(body)
-	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac := hmac.New(sha256.New, []byte(client.apiSecret))
 	mac.Write([]byte(text))
 	sign := hex.EncodeToString(mac.Sum(nil))
 
 	return map[string]string{
-		"ACCESS-KEY":       apiKey,
+		"ACCESS-KEY":       client.apiKey,
 		"ACCESS-TIMESTAMP": timestamp,
 		"ACCESS-SIGN":      sign,
 		"Content-Type":     "application/json",
